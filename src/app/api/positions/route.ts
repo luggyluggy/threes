@@ -1,16 +1,20 @@
 import { NextResponse } from "next/server";
 import { getPositions, setPosition } from "@/lib/db";
-import { getName } from "@/lib/identity";
+import { getIdentity } from "@/lib/identity";
 import { ROOM_IDS } from "@/lib/rooms";
 
 export async function GET(): Promise<NextResponse> {
-  const positions = await getPositions();
+  const identity = await getIdentity();
+  if (!identity)
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  const positions = await getPositions(identity.prisonId);
   return NextResponse.json({ positions });
 }
 
 export async function PATCH(req: Request): Promise<NextResponse> {
-  const name = await getName();
-  if (!name) return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  const identity = await getIdentity();
+  if (!identity)
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
 
   const body = (await req.json().catch(() => ({}))) as {
     character?: unknown;
@@ -22,6 +26,6 @@ export async function PATCH(req: Request): Promise<NextResponse> {
   if (!ROOM_IDS.has(room))
     return NextResponse.json({ error: "unknown room" }, { status: 400 });
 
-  await setPosition(character, room);
+  await setPosition(identity.prisonId, character, room);
   return NextResponse.json({ ok: true });
 }

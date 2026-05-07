@@ -19,22 +19,24 @@ const CONTEXT_WINDOW = 8;
  * changes implied by the latest message. Updates the character_positions table
  * directly. Idempotent — safe to call repeatedly.
  */
-export async function extractAndApplyMovements(): Promise<void> {
-  const room = await getRoom();
+export async function extractAndApplyMovements(roomId: string): Promise<void> {
+  const room = await getRoom(roomId);
   if (!room || !room.ai_name) return;
 
-  const history = await getMessages("ic", 0, CONTEXT_WINDOW);
+  const history = await getMessages(roomId, "ic", 0, CONTEXT_WINDOW);
   if (history.length === 0) return;
 
-  const personas = await getAllUserPersonas();
-  const positions = await getPositions();
+  const personas = await getAllUserPersonas(roomId);
+  const positions = await getPositions(roomId);
 
   const knownCharacters = new Set<string>();
   for (const p of personas) knownCharacters.add(p.name);
   for (const m of history) if (m.sender_kind === "human") knownCharacters.add(m.sender);
   knownCharacters.add(room.ai_name);
 
-  const positionsByChar = new Map(positions.map((p) => [p.character_name, p.room_id]));
+  const positionsByChar = new Map(
+    positions.map((p) => [p.character_name, p.location_room_id]),
+  );
 
   const roomList = ROOMS.map((r) => `- ${r.id} (${r.label}: ${r.description})`).join("\n");
   const charList = Array.from(knownCharacters)
@@ -98,6 +100,6 @@ Return JSON now.`;
     if (!knownCharacters.has(m.character)) continue;
     if (!ROOM_IDS.has(m.room)) continue;
     if (positionsByChar.get(m.character) === m.room) continue;
-    await setPosition(m.character, m.room);
+    await setPosition(roomId, m.character, m.room);
   }
 }

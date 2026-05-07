@@ -13,8 +13,6 @@ import { extractAndApplyMovements } from "./extract";
 import { roomLabel } from "./rooms";
 import { xaiChatWithTools, type ToolDefinition } from "./xai";
 
-// Hard cap per xAI call, slightly under Vercel's 60s maxDuration so the
-// finally always runs and releases the typing lock.
 const XAI_CALL_TIMEOUT_MS = 50_000;
 
 const SCHEDULE_TOOL: ToolDefinition = {
@@ -39,11 +37,14 @@ const SCHEDULE_TOOL: ToolDefinition = {
   },
 };
 
-export async function runAILoop(opts: { triggerNote?: string } = {}): Promise<void> {
-  const room = await getRoom();
+export async function runAILoop(
+  roomId: string,
+  opts: { triggerNote?: string } = {},
+): Promise<void> {
+  const room = await getRoom(roomId);
   if (!room || !room.ai_name || !room.persona || room.ai_muted) return;
 
-  const acquired = await tryAcquireTyping();
+  const acquired = await tryAcquireTyping(roomId);
   if (!acquired) return;
 
   let { triggerNote } = opts;
@@ -51,24 +52,24 @@ export async function runAILoop(opts: { triggerNote?: string } = {}): Promise<vo
   try {
     let safety = 0;
     while (safety++ < 5) {
-      const fresh = await getRoom();
+      const fresh = await getRoom(roomId);
       if (!fresh || fresh.ai_muted) break;
 
-      const history = await getMessages("ic", 0, 200);
+      const history = await getMessages(roomId, "ic", 0, 200);
       const lastIsAI =
         history.length > 0 && history[history.length - 1].sender_kind === "ai";
 
-      // For triggered runs, generate even if AI had the last word (or history is empty).
-      // For reactive runs, stop if AI already has the last word or there's nothing to respond to.
       if (!triggerNote) {
         if (history.length === 0 || lastIsAI) break;
       }
 
       const aiName = fresh.ai_name!;
-      const personas = await getAllUserPersonas();
-      const positions = await getPositions();
+      const personas = await getAllUserPersonas(roomId);
+      const positions = await getPositions(roomId);
       const personaMap = new Map(personas.map((p) => [p.name, p.persona]));
-      const positionMap = new Map(positions.map((p) => [p.character_name, p.room_id]));
+      const positionMap = new Map(
+        positions.map((p) => [p.character_name, p.location_room_id]),
+      );
 
       const seenNames = new Set<string>();
       for (const m of history) if (m.sender_kind === "human") seenNames.add(m.sender);
@@ -109,7 +110,6 @@ You are participating in an in-character chat. Respond as ${aiName} only — do 
 
 You may use the schedule_action tool to queue future in-character actions (daily inspections, patrols, follow-ups, etc.). When you schedule something, continue your response naturally without announcing that you set a reminder.${triggerClause}`;
 
-      // Clear triggerNote after first iteration so subsequent reactive iterations behave normally.
       triggerNote = undefined;
 
       const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
@@ -123,9 +123,9 @@ You may use the schedule_action tool to queue future in-character actions (daily
         }
       }
 
-      // Refresh the heartbeat each iteration so a slow but live response
-      // doesn't get its lock stolen by clearStaleTyping.
-      await refreshTyping().catch((e) => console.error("refreshTyping failed:", e));
+      await refreshTyping(roomId).catch((e) =>
+        console.error("refreshTyping failed:", e),
+      );
 
       let content: string;
       let toolCalls: Awaited<ReturnType<typeof xaiChatWithTools>>["toolCalls"];
@@ -147,11 +147,12 @@ You may use the schedule_action tool to queue future in-character actions (daily
             : String(err);
         const is503 = msg.includes("503");
         await insertMessage(
+          roomId,
           "ic",
           aiName,
           "ai",
           is503 || isAbort
-            ? "The officer is currently away from his post (error). He will be back soon."
+            ? "The officer is currently away from his post (error). They will be back soon."
             : `[error generating response: ${msg}]`,
         );
         break;
@@ -159,7 +160,6 @@ You may use the schedule_action tool to queue future in-character actions (daily
         clearTimeout(timer);
       }
 
-      // Persist any scheduled tasks the AI requested.
       for (const tc of toolCalls) {
         if (tc.name === "schedule_action") {
           const note =
@@ -168,7 +168,7 @@ You may use the schedule_action tool to queue future in-character actions (daily
             typeof tc.arguments.delay_hours === "number" ? tc.arguments.delay_hours : 1;
           if (note && hours > 0) {
             const scheduledFor = Date.now() + Math.round(hours * 60 * 60 * 1000);
-            await insertScheduledTask(note, scheduledFor).catch((e) =>
+            await insertScheduledTask(roomId, note, scheduledFor).catch((e) =>
               console.error("failed to save scheduled task:", e),
             );
           }
@@ -176,15 +176,15 @@ You may use the schedule_action tool to queue future in-character actions (daily
       }
 
       if (content) {
-        await insertMessage("ic", aiName, "ai", content);
+        await insertMessage(roomId, "ic", aiName, "ai", content);
         try {
-          await extractAndApplyMovements();
+          await extractAndApplyMovements(roomId);
         } catch (err) {
           console.error("post-AI extraction failed:", err);
         }
       }
     }
   } finally {
-    await setTyping(false);
+    await setTyping(roomId, false);
   }
 }

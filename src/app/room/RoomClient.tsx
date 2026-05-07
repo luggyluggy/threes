@@ -3,28 +3,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Channel = "ooc" | "ic";
-type MobileTab = "roleplay" | "chat" | "inmates";
+type MobileTab = "roleplay" | "chat" | "inmates" | "punlog";
+type LeftTab = "inmates" | "punlog";
+
+interface PunishmentRecord {
+  id: number;
+  inmate: string;
+  punishment: string;
+  administrator: string;
+  occurred_at: number;
+}
 
 interface InmateRecord {
   name: string;
   prisonerNumber: string;
   crime: string;
 }
-
-const HARDCODED_INMATES: InmateRecord[] = [
-  { name: "Mandy Brown", prisonerNumber: "928139", crime: "Domestic Battery" },
-  { name: "Tara Delgado", prisonerNumber: "334872", crime: "Armed Robbery" },
-  { name: "Keisha Monroe", prisonerNumber: "501047", crime: "Drug Trafficking" },
-  { name: "Svetlana Voss", prisonerNumber: "762213", crime: "Wire Fraud" },
-  { name: "Destiny Pruitt", prisonerNumber: "189564", crime: "Aggravated Assault" },
-  { name: "Carmen Reyes", prisonerNumber: "447801", crime: "Extortion" },
-  { name: "Niamh Callahan", prisonerNumber: "613398", crime: "Manslaughter" },
-  { name: "Portia Wynn", prisonerNumber: "820056", crime: "Grand Larceny" },
-  { name: "Yolanda Ferris", prisonerNumber: "275490", crime: "Arson" },
-  { name: "Bex Nakamura", prisonerNumber: "094731", crime: "Identity Theft" },
-  { name: "Rhonda Stokes", prisonerNumber: "558317", crime: "Conspiracy to Commit Murder" },
-  { name: "Aaliya Osei", prisonerNumber: "703622", crime: "Kidnapping" },
-];
 
 interface Message {
   id: number;
@@ -40,6 +34,7 @@ interface PollResponse {
   ic: Message[];
   room: { initialized: boolean; aiName: string | null; aiMuted: boolean; aiTyping: boolean };
   personas: { ai: string | null; users: Record<string, string> };
+  punishments: PunishmentRecord[];
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -61,10 +56,14 @@ export default function RoomClient({
   myName,
   aiName,
   initialMuted,
+  prisonName,
+  inmates,
 }: {
   myName: string;
   aiName: string;
   initialMuted: boolean;
+  prisonName: string;
+  inmates: InmateRecord[];
 }) {
   const [oocMessages, setOocMessages] = useState<Message[]>([]);
   const [icMessages, setIcMessages] = useState<Message[]>([]);
@@ -74,6 +73,8 @@ export default function RoomClient({
   const [userPersonas, setUserPersonas] = useState<Record<string, string>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<MobileTab>("roleplay");
+  const [leftTab, setLeftTab] = useState<LeftTab>("inmates");
+  const [punishments, setPunishments] = useState<PunishmentRecord[]>([]);
   const isMobile = useIsMobile();
 
   const oocLastRef = useRef(0);
@@ -108,6 +109,7 @@ export default function RoomClient({
       setAiTyping(data.room.aiTyping);
       setAiPersona(data.personas.ai ?? "");
       setUserPersonas(data.personas.users);
+      if (Array.isArray(data.punishments)) setPunishments(data.punishments);
     } catch {
       // Network blip — next tick will retry.
     } finally {
@@ -188,17 +190,50 @@ export default function RoomClient({
       onSent={triggerPollSoon}
     />
   );
-  const inmatesBlock = (
+  const inmatesPanel = (
     <div style={mapWrapperStyle}>
-      <InmateList />
+      <InmateList inmates={inmates} />
     </div>
   );
+  const punLogPanel = (
+    <div style={mapWrapperStyle}>
+      <PunLog records={punishments} />
+    </div>
+  );
+  const leftBlock = (
+    <div style={mapWrapperStyle}>
+      <div style={leftTabBarStyle}>
+        <button
+          style={leftTab === "inmates" ? leftTabActiveStyle : leftTabIdleStyle}
+          onClick={() => setLeftTab("inmates")}
+        >
+          Inmates
+        </button>
+        <button
+          style={leftTab === "punlog" ? leftTabActiveStyle : leftTabIdleStyle}
+          onClick={() => setLeftTab("punlog")}
+        >
+          PunLog
+        </button>
+      </div>
+      {leftTab === "inmates" ? (
+        <InmateList inmates={inmates} />
+      ) : (
+        <PunLog records={punishments} />
+      )}
+    </div>
+  );
+
+  async function switchPrison() {
+    await fetch("/api/leave", { method: "POST" });
+    window.location.href = "/";
+  }
 
   return (
     <div style={shellStyle}>
       <header style={isMobile ? mobileHeaderStyle : headerStyle}>
         <div style={isMobile ? mobileTitleRowStyle : undefined}>
-          <strong>Threes</strong>
+          <strong>{prisonName}</strong>
           <span style={isMobile ? mobileSubtitleStyle : { color: "#9aa0a6", marginLeft: 12 }}>
             you: {myName} · ai: {aiName}
           </span>
@@ -211,6 +246,9 @@ export default function RoomClient({
             flexWrap: "wrap",
           }}
         >
+          <button onClick={switchPrison} style={ghostButtonStyle}>
+            Switch prisons
+          </button>
           <button onClick={() => setDrawerOpen(true)} style={ghostButtonStyle}>
             Personas
           </button>
@@ -238,17 +276,21 @@ export default function RoomClient({
             <TabButton active={activeTab === "inmates"} onClick={() => setActiveTab("inmates")}>
               Inmates
             </TabButton>
+            <TabButton active={activeTab === "punlog"} onClick={() => setActiveTab("punlog")}>
+              PunLog
+            </TabButton>
           </nav>
           <div style={mobileBodyStyle}>
             <div style={tabPanelStyle(activeTab === "roleplay")}>{icPane}</div>
             <div style={tabPanelStyle(activeTab === "chat")}>{oocPane}</div>
-            <div style={tabPanelStyle(activeTab === "inmates")}>{inmatesBlock}</div>
+            <div style={tabPanelStyle(activeTab === "inmates")}>{inmatesPanel}</div>
+            <div style={tabPanelStyle(activeTab === "punlog")}>{punLogPanel}</div>
           </div>
         </>
       ) : (
         <div style={panesStyle}>
           <div style={leftColumnStyle}>
-            {inmatesBlock}
+            {leftBlock}
             {oocPane}
           </div>
           {icPane}
@@ -478,27 +520,77 @@ function ReadOnlyPersona({
   );
 }
 
-function InmateList() {
+function InmateList({ inmates }: { inmates: InmateRecord[] }) {
   return (
     <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ color: "#9aa0a6", fontSize: 11, letterSpacing: 0.5, marginBottom: 2 }}>
         INMATE REGISTRY
       </div>
-      {HARDCODED_INMATES.map((inmate) => (
-        <div key={inmate.prisonerNumber} style={inmateCardStyle}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-            <div style={{ fontWeight: 600, fontSize: 14, color: "#e8e8ea" }}>{inmate.name}</div>
-            <div style={{ fontSize: 11, color: "#9aa0a6", fontFamily: "monospace" }}>
-              #{inmate.prisonerNumber}
+      {inmates.length === 0 ? (
+        <div style={{ color: "#6f7480", fontSize: 13, fontStyle: "italic" }}>
+          No inmates on file.
+        </div>
+      ) : (
+        inmates.map((inmate) => (
+          <div key={inmate.prisonerNumber} style={inmateCardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "#e8e8ea" }}>{inmate.name}</div>
+              <div style={{ fontSize: 11, color: "#9aa0a6", fontFamily: "monospace" }}>
+                #{inmate.prisonerNumber}
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "#c0a98a", marginTop: 4 }}>
+              {inmate.crime}
             </div>
           </div>
-          <div style={{ fontSize: 12, color: "#c0a98a", marginTop: 4 }}>
-            {inmate.crime}
-          </div>
-        </div>
-      ))}
+        ))
+      )}
     </div>
   );
+}
+
+function PunLog({ records }: { records: PunishmentRecord[] }) {
+  const sorted = [...records].sort((a, b) => b.occurred_at - a.occurred_at);
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ color: "#9aa0a6", fontSize: 11, letterSpacing: 0.5, marginBottom: 2 }}>
+        PUNISHMENT LOG
+      </div>
+      {sorted.length === 0 ? (
+        <div style={{ color: "#6f7480", fontSize: 13, fontStyle: "italic" }}>
+          No punishments recorded yet.
+        </div>
+      ) : (
+        sorted.map((p) => (
+          <div key={p.id} style={inmateCardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: "#e8e8ea" }}>{p.inmate}</div>
+              <div style={{ fontSize: 11, color: "#9aa0a6", fontFamily: "monospace" }}>
+                {formatPunDate(p.occurred_at)}
+              </div>
+            </div>
+            <div style={{ fontSize: 13, color: "#e6a8a8", marginTop: 4 }}>{p.punishment}</div>
+            <div style={{ fontSize: 11, color: "#9aa0a6", marginTop: 4 }}>
+              by {p.administrator}
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
+
+function formatPunDate(ts: number): string {
+  try {
+    return new Date(ts).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return new Date(ts).toISOString();
+  }
 }
 
 function mergeUnique(prev: Message[], incoming: Message[]): Message[] {
@@ -868,6 +960,36 @@ const closeButtonStyle: React.CSSProperties = {
   fontSize: 22,
   lineHeight: 1,
   padding: "0 8px",
+};
+
+const leftTabBarStyle: React.CSSProperties = {
+  display: "flex",
+  borderBottom: "1px solid #23262d",
+  background: "#13151a",
+  flex: "0 0 auto",
+};
+
+const leftTabBaseStyle: React.CSSProperties = {
+  flex: 1,
+  padding: "8px 0",
+  fontSize: 12,
+  fontWeight: 600,
+  letterSpacing: 0.4,
+  border: "none",
+  cursor: "pointer",
+  background: "transparent",
+};
+
+const leftTabActiveStyle: React.CSSProperties = {
+  ...leftTabBaseStyle,
+  color: "#e8e8ea",
+  borderBottom: "2px solid #3457d5",
+};
+
+const leftTabIdleStyle: React.CSSProperties = {
+  ...leftTabBaseStyle,
+  color: "#6f7480",
+  borderBottom: "2px solid transparent",
 };
 
 const inmateCardStyle: React.CSSProperties = {

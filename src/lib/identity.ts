@@ -1,18 +1,49 @@
 import { cookies } from "next/headers";
 
-const COOKIE_NAME = "threes_name";
+const PRISON_COOKIE = "threes_prison";
+const NAME_COOKIE = "threes_name";
+const COOKIE_OPTS = {
+  httpOnly: true,
+  sameSite: "lax" as const,
+  path: "/",
+  maxAge: 60 * 60 * 24 * 365,
+};
 
-export async function getName(): Promise<string | null> {
+export interface Identity {
+  prisonId: string;
+  name: string;
+}
+
+export async function getPrisonId(): Promise<string | null> {
   const c = await cookies();
-  return c.get(COOKIE_NAME)?.value ?? null;
+  return c.get(PRISON_COOKIE)?.value ?? null;
+}
+
+export async function getIdentity(): Promise<Identity | null> {
+  const c = await cookies();
+  const prisonId = c.get(PRISON_COOKIE)?.value;
+  const name = c.get(NAME_COOKIE)?.value;
+  if (!prisonId || !name) return null;
+  return { prisonId, name };
+}
+
+export async function setPrisonId(prisonId: string): Promise<void> {
+  const c = await cookies();
+  c.set(PRISON_COOKIE, prisonId, COOKIE_OPTS);
 }
 
 export async function setName(name: string): Promise<void> {
   const c = await cookies();
-  c.set(COOKIE_NAME, name, {
-    httpOnly: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: 60 * 60 * 24 * 365,
-  });
+  c.set(NAME_COOKIE, name, COOKIE_OPTS);
+}
+
+export async function clearIdentity(): Promise<void> {
+  const c = await cookies();
+  c.delete(PRISON_COOKIE);
+  c.delete(NAME_COOKIE);
+}
+
+export async function clearName(): Promise<void> {
+  const c = await cookies();
+  c.delete(NAME_COOKIE);
 }

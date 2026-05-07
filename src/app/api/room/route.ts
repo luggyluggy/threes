@@ -1,8 +1,12 @@
 import { NextResponse } from "next/server";
-import { getRoom, setMuted, setRoomPersona, setupRoom } from "@/lib/db";
+import { getRoom, setMuted, setRoomPersona } from "@/lib/db";
+import { getIdentity } from "@/lib/identity";
 
 export async function GET(): Promise<NextResponse> {
-  const room = await getRoom();
+  const identity = await getIdentity();
+  if (!identity)
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+  const room = await getRoom(identity.prisonId);
   return NextResponse.json({
     initialized: !!room,
     aiName: room?.ai_name ?? null,
@@ -11,20 +15,11 @@ export async function GET(): Promise<NextResponse> {
   });
 }
 
-export async function POST(req: Request): Promise<NextResponse> {
-  if (await getRoom())
-    return NextResponse.json({ error: "already initialized" }, { status: 409 });
-  const body = (await req.json().catch(() => ({}))) as { aiName?: unknown; persona?: unknown };
-  const aiName = typeof body.aiName === "string" ? body.aiName.trim() : "";
-  const persona = typeof body.persona === "string" ? body.persona.trim() : "";
-  if (!aiName) return NextResponse.json({ error: "aiName required" }, { status: 400 });
-  if (!persona) return NextResponse.json({ error: "persona required" }, { status: 400 });
-  if (aiName.length > 40) return NextResponse.json({ error: "aiName too long" }, { status: 400 });
-  await setupRoom(aiName, persona);
-  return NextResponse.json({ ok: true });
-}
-
 export async function PATCH(req: Request): Promise<NextResponse> {
+  const identity = await getIdentity();
+  if (!identity)
+    return NextResponse.json({ error: "not authenticated" }, { status: 401 });
+
   const body = (await req.json().catch(() => ({}))) as {
     aiMuted?: unknown;
     persona?: unknown;
@@ -33,7 +28,7 @@ export async function PATCH(req: Request): Promise<NextResponse> {
   let touched = false;
 
   if (typeof body.aiMuted === "boolean") {
-    await setMuted(body.aiMuted);
+    await setMuted(identity.prisonId, body.aiMuted);
     touched = true;
   }
 
@@ -42,7 +37,7 @@ export async function PATCH(req: Request): Promise<NextResponse> {
     if (!persona) return NextResponse.json({ error: "persona cannot be empty" }, { status: 400 });
     if (persona.length > 4000)
       return NextResponse.json({ error: "persona too long" }, { status: 400 });
-    await setRoomPersona(persona);
+    await setRoomPersona(identity.prisonId, persona);
     touched = true;
   }
 

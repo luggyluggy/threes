@@ -1,29 +1,67 @@
 import { redirect } from "next/navigation";
 import { getRoom, setupRoom } from "@/lib/db";
-import { AI_NAME, AI_PERSONA, CHARACTER_NAMES } from "@/lib/characters";
-import { getName } from "@/lib/identity";
+import { getIdentity, getPrisonId } from "@/lib/identity";
+import { getPrison, PRISON_ORDER } from "@/lib/prisons";
 import ClaimNameForm from "./_components/ClaimNameForm";
+import PrisonPickerForm from "./_components/PrisonPickerForm";
 
 export default async function Home() {
-  const name = await getName();
-  if (!name || !CHARACTER_NAMES.includes(name)) {
+  const identity = await getIdentity();
+  if (identity) {
+    const prison = getPrison(identity.prisonId);
+    if (prison && prison.humans.includes(identity.name)) {
+      // Both halves of identity are valid — make sure the room exists, then go.
+      const room = await getRoom(prison.id);
+      if (!room) await setupRoom(prison.id, prison.aiName, prison.aiPersona);
+      redirect("/room");
+    }
+  }
+
+  const prisonId = await getPrisonId();
+  const prison = getPrison(prisonId);
+
+  if (!prison) {
     return (
       <main style={pageStyle}>
         <div style={cardStyle}>
           <h1 style={{ marginTop: 0 }}>Threes</h1>
-          <p style={{ color: "#9aa0a6" }}>Choose your character.</p>
-          <ClaimNameForm existing={[...CHARACTER_NAMES]} />
+          <p style={{ color: "#9aa0a6" }}>Pick a prison to enter.</p>
+          <PrisonPickerForm
+            prisons={PRISON_ORDER.map((p) => ({
+              id: p.id,
+              displayName: p.displayName,
+              blurb: blurbFor(p.id),
+            }))}
+          />
         </div>
       </main>
     );
   }
 
-  const room = await getRoom();
-  if (!room) {
-    await setupRoom(AI_NAME, AI_PERSONA);
-  }
+  return (
+    <main style={pageStyle}>
+      <div style={cardStyle}>
+        <h1 style={{ marginTop: 0 }}>{prison.displayName}</h1>
+        <p style={{ color: "#9aa0a6" }}>Choose your character.</p>
+        <ClaimNameForm
+          prisonId={prison.id}
+          prisonName={prison.displayName}
+          characters={[...prison.humans]}
+        />
+      </div>
+    </main>
+  );
+}
 
-  redirect("/room");
+function blurbFor(id: string): string {
+  switch (id) {
+    case "hardgrove":
+      return "Women's correctional facility. AI plays the cell-block guard.";
+    case "monty":
+      return "Co-ed correctional facility. AI plays the floor officer.";
+    default:
+      return "";
+  }
 }
 
 const pageStyle: React.CSSProperties = {

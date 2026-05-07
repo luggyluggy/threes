@@ -11,24 +11,13 @@ if (!url) {
 
 const sql = neon(url);
 
-const before = {
-  messages: (await sql`SELECT COUNT(*)::int AS n FROM messages`)[0].n,
-  user_personas: (await sql`SELECT COUNT(*)::int AS n FROM user_personas`)[0].n,
-  character_positions: (await sql`SELECT COUNT(*)::int AS n FROM character_positions`)[0].n,
-  room: (await sql`SELECT COUNT(*)::int AS n FROM room`)[0].n,
-};
-console.log("before:", before);
+// DROP rather than TRUNCATE so ensureSchema can recreate tables with the
+// current shape (composite PKs, new room_id columns, etc.).
+await sql`DROP TABLE IF EXISTS punishments CASCADE`;
+await sql`DROP TABLE IF EXISTS scheduled_tasks CASCADE`;
+await sql`DROP TABLE IF EXISTS character_positions CASCADE`;
+await sql`DROP TABLE IF EXISTS user_personas CASCADE`;
+await sql`DROP TABLE IF EXISTS messages CASCADE`;
+await sql`DROP TABLE IF EXISTS room CASCADE`;
 
-await sql`TRUNCATE TABLE messages RESTART IDENTITY`;
-await sql`TRUNCATE TABLE user_personas`;
-await sql`TRUNCATE TABLE character_positions`;
-await sql`TRUNCATE TABLE room`;
-
-const after = {
-  messages: (await sql`SELECT COUNT(*)::int AS n FROM messages`)[0].n,
-  user_personas: (await sql`SELECT COUNT(*)::int AS n FROM user_personas`)[0].n,
-  character_positions: (await sql`SELECT COUNT(*)::int AS n FROM character_positions`)[0].n,
-  room: (await sql`SELECT COUNT(*)::int AS n FROM room`)[0].n,
-};
-console.log("after: ", after);
-console.log("done");
+console.log("dropped all tables — next request will recreate via ensureSchema()");
