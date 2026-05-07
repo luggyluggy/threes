@@ -15,17 +15,20 @@ const before = {
   messages: (await sql`SELECT COUNT(*)::int AS n FROM messages`)[0].n,
   user_personas: (await sql`SELECT COUNT(*)::int AS n FROM user_personas`)[0].n,
   character_positions: (await sql`SELECT COUNT(*)::int AS n FROM character_positions`)[0].n,
+  room: (await sql`SELECT COUNT(*)::int AS n FROM room`)[0].n,
 };
 console.log("before:", before);
 
 await sql`TRUNCATE TABLE messages RESTART IDENTITY`;
 await sql`TRUNCATE TABLE user_personas`;
 await sql`TRUNCATE TABLE character_positions`;
+await sql`TRUNCATE TABLE room`;
 
 const after = {
   messages: (await sql`SELECT COUNT(*)::int AS n FROM messages`)[0].n,
   user_personas: (await sql`SELECT COUNT(*)::int AS n FROM user_personas`)[0].n,
   character_positions: (await sql`SELECT COUNT(*)::int AS n FROM character_positions`)[0].n,
+  room: (await sql`SELECT COUNT(*)::int AS n FROM room`)[0].n,
 };
 console.log("after: ", after);
 console.log("done");

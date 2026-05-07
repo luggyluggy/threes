@@ -15,6 +15,17 @@ interface InmateRecord {
 
 const HARDCODED_INMATES: InmateRecord[] = [
   { name: "Mandy Brown", prisonerNumber: "928139", crime: "Domestic Battery" },
+  { name: "Tara Delgado", prisonerNumber: "334872", crime: "Armed Robbery" },
+  { name: "Keisha Monroe", prisonerNumber: "501047", crime: "Drug Trafficking" },
+  { name: "Svetlana Voss", prisonerNumber: "762213", crime: "Wire Fraud" },
+  { name: "Destiny Pruitt", prisonerNumber: "189564", crime: "Aggravated Assault" },
+  { name: "Carmen Reyes", prisonerNumber: "447801", crime: "Extortion" },
+  { name: "Niamh Callahan", prisonerNumber: "613398", crime: "Manslaughter" },
+  { name: "Portia Wynn", prisonerNumber: "820056", crime: "Grand Larceny" },
+  { name: "Yolanda Ferris", prisonerNumber: "275490", crime: "Arson" },
+  { name: "Bex Nakamura", prisonerNumber: "094731", crime: "Identity Theft" },
+  { name: "Rhonda Stokes", prisonerNumber: "558317", crime: "Conspiracy to Commit Murder" },
+  { name: "Aaliya Osei", prisonerNumber: "703622", crime: "Kidnapping" },
 ];
 
 interface Message {

@@ -1,13 +1,12 @@
 import { redirect } from "next/navigation";
-import { getRoom } from "@/lib/db";
-import { CHARACTER_NAMES } from "@/lib/characters";
+import { getRoom, setupRoom } from "@/lib/db";
+import { AI_NAME, AI_PERSONA, CHARACTER_NAMES } from "@/lib/characters";
 import { getName } from "@/lib/identity";
 import ClaimNameForm from "./_components/ClaimNameForm";
-import SetupRoomForm from "./_components/SetupRoomForm";
 
 export default async function Home() {
   const name = await getName();
-  if (!name) {
+  if (!name || !CHARACTER_NAMES.includes(name)) {
     return (
       <main style={pageStyle}>
         <div style={cardStyle}>
@@ -21,18 +20,7 @@ export default async function Home() {
 
   const room = await getRoom();
   if (!room) {
-    return (
-      <main style={pageStyle}>
-        <div style={cardStyle}>
-          <h1 style={{ marginTop: 0 }}>Set up the room</h1>
-          <p style={{ color: "#9aa0a6" }}>
-            Hi <strong>{name}</strong>. The room hasn&apos;t been initialized yet. Set the AI&apos;s
-            name and persona — these are fixed for the lifetime of the room.
-          </p>
-          <SetupRoomForm />
-        </div>
-      </main>
-    );
+    await setupRoom(AI_NAME, AI_PERSONA);
   }
 
   redirect("/room");
