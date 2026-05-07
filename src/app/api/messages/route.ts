@@ -3,6 +3,7 @@ import { after } from "next/server";
 import { getMessages, getRoom, insertMessage, type Channel } from "@/lib/db";
 import { getName } from "@/lib/identity";
 import { runAILoop } from "@/lib/ai";
+import { extractAndApplyMovements } from "@/lib/extract";
 
 export const maxDuration = 60;
 
@@ -38,12 +39,19 @@ export async function POST(req: Request): Promise<NextResponse> {
 
   const msg = await insertMessage(channel, name, "human", content);
 
-  if (channel === "ic" && !room.ai_muted) {
+  if (channel === "ic") {
     after(async () => {
       try {
-        await runAILoop();
+        await extractAndApplyMovements();
       } catch (err) {
-        console.error("AI loop error:", err);
+        console.error("extraction error:", err);
+      }
+      if (!room.ai_muted) {
+        try {
+          await runAILoop();
+        } catch (err) {
+          console.error("AI loop error:", err);
+        }
       }
     });
   }

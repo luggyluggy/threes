@@ -26,3 +26,11 @@ textarea {
 a {
   color: #8ab4ff;
 }
+
+@media (max-width: 768px) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}

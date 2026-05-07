@@ -1,11 +1,14 @@
 import {
   getAllUserPersonas,
   getMessages,
+  getPositions,
   getRoom,
   insertMessage,
   setTyping,
   tryAcquireTyping,
 } from "./db";
+import { extractAndApplyMovements } from "./extract";
+import { roomLabel } from "./rooms";
 import { xaiChat } from "./xai";
 
 /**
@@ -20,7 +23,7 @@ export async function runAILoop(): Promise<void> {
   if (!room || !room.ai_name || !room.persona || room.ai_muted) return;
 
   const acquired = await tryAcquireTyping();
-  if (!acquired) return; // Another invocation is already generating.
+  if (!acquired) return;
 
   try {
     let safety = 0;
@@ -35,10 +38,13 @@ export async function runAILoop(): Promise<void> {
 
       const aiName = fresh.ai_name!;
       const personas = await getAllUserPersonas();
+      const positions = await getPositions();
+      const personaMap = new Map(personas.map((p) => [p.name, p.persona]));
+      const positionMap = new Map(positions.map((p) => [p.character_name, p.room_id]));
+
       const seenNames = new Set<string>();
       for (const m of history) if (m.sender_kind === "human") seenNames.add(m.sender);
       for (const p of personas) seenNames.add(p.name);
-      const personaMap = new Map(personas.map((p) => [p.name, p.persona]));
 
       const personaLines = Array.from(seenNames)
         .sort()
@@ -48,12 +54,26 @@ export async function runAILoop(): Promise<void> {
         })
         .join("\n");
 
+      const allNamesForLocations = new Set<string>(seenNames);
+      allNamesForLocations.add(aiName);
+      const locationLines = Array.from(allNamesForLocations)
+        .sort()
+        .map((n) => {
+          const r = positionMap.get(n);
+          const tag = n === aiName ? " (you)" : "";
+          return r ? `- ${n}${tag}: ${roomLabel(r)}` : `- ${n}${tag}: location unknown`;
+        })
+        .join("\n");
+
       const system = `You are ${aiName}. ${fresh.persona}
 
 The human users in this chat and the characters they are playing:
 ${personaLines || "- (no humans have spoken yet)"}
 
-You are participating in an in-character chat. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
+Current locations in the prison:
+${locationLines}
+
+You are participating in an in-character chat. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Stay consistent with the current locations: don't claim to be somewhere you aren't. If you want to move, narrate it clearly (e.g. "I walk to the dining hall") so the location updates. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
 
       const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
         { role: "system", content: system },
@@ -80,6 +100,13 @@ You are participating in an in-character chat. Respond as ${aiName} only — do 
       }
 
       await insertMessage("ic", aiName, "ai", response);
+
+      // Extract location changes from the AI's reply too.
+      try {
+        await extractAndApplyMovements();
+      } catch (err) {
+        console.error("post-AI extraction failed:", err);
+      }
     }
   } finally {
     await setTyping(false);

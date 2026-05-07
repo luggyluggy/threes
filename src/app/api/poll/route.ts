@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getAllUserPersonas, getMessages, getRoom } from "@/lib/db";
+import { getAllUserPersonas, getMessages, getPositions, getRoom } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -8,15 +8,19 @@ export async function GET(req: Request): Promise<NextResponse> {
   const oocSince = Number(url.searchParams.get("oocSince") || 0) || 0;
   const icSince = Number(url.searchParams.get("icSince") || 0) || 0;
 
-  const [room, ooc, ic, userPersonas] = await Promise.all([
+  const [room, ooc, ic, userPersonas, positions] = await Promise.all([
     getRoom(),
     getMessages("ooc", oocSince),
     getMessages("ic", icSince),
     getAllUserPersonas(),
+    getPositions(),
   ]);
 
   const users: Record<string, string> = {};
   for (const p of userPersonas) users[p.name] = p.persona;
+
+  const positionsMap: Record<string, string> = {};
+  for (const p of positions) positionsMap[p.character_name] = p.room_id;
 
   return NextResponse.json({
     ooc,
@@ -31,5 +35,6 @@ export async function GET(req: Request): Promise<NextResponse> {
       ai: room?.persona ?? null,
       users,
     },
+    positions: positionsMap,
   });
 }

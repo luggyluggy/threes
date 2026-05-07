@@ -57,6 +57,13 @@ async function ensureSchema(): Promise<void> {
         updated_at BIGINT NOT NULL
       )
     `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS character_positions (
+        character_name TEXT PRIMARY KEY,
+        room_id TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      )
+    `;
   })().catch((err) => {
     _schemaReady = null;
     throw err;
@@ -233,6 +240,40 @@ export async function setUserPersona(name: string, persona: string): Promise<voi
 export async function getAllUserPersonas(): Promise<UserPersona[]> {
   const rows = await sql<UserPersonaRow>`SELECT * FROM user_personas ORDER BY name`;
   return rows.map(normalizeUserPersona);
+}
+
+export interface CharacterPosition {
+  character_name: string;
+  room_id: string;
+  updated_at: number;
+}
+
+interface CharacterPositionRow {
+  character_name: string;
+  room_id: string;
+  updated_at: string | number;
+}
+
+export async function getPositions(): Promise<CharacterPosition[]> {
+  const rows = await sql<CharacterPositionRow>`
+    SELECT * FROM character_positions ORDER BY character_name
+  `;
+  return rows.map((r) => ({
+    character_name: r.character_name,
+    room_id: r.room_id,
+    updated_at: Number(r.updated_at),
+  }));
+}
+
+export async function setPosition(characterName: string, roomId: string): Promise<void> {
+  const now = Date.now();
+  await sql`
+    INSERT INTO character_positions (character_name, room_id, updated_at)
+    VALUES (${characterName}, ${roomId}, ${now})
+    ON CONFLICT (character_name) DO UPDATE
+      SET room_id = EXCLUDED.room_id,
+          updated_at = EXCLUDED.updated_at
+  `;
 }
 
 export async function getMessages(
