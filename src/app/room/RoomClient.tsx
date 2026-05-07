@@ -1,11 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import PrisonMap from "./PrisonMap";
 
 type Channel = "ooc" | "ic";
-type MobileTab = "roleplay" | "chat" | "map" | "inmates";
-type LeftTab = "map" | "inmates";
+type MobileTab = "roleplay" | "chat" | "inmates";
 
 interface InmateRecord {
   name: string;
@@ -42,7 +40,6 @@ interface PollResponse {
   ic: Message[];
   room: { initialized: boolean; aiName: string | null; aiMuted: boolean; aiTyping: boolean };
   personas: { ai: string | null; users: Record<string, string> };
-  positions: Record<string, string>;
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -75,10 +72,8 @@ export default function RoomClient({
   const [aiTyping, setAiTyping] = useState(false);
   const [aiPersona, setAiPersona] = useState<string>("");
   const [userPersonas, setUserPersonas] = useState<Record<string, string>>({});
-  const [positions, setPositions] = useState<Record<string, string>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<MobileTab>("roleplay");
-  const [leftTab, setLeftTab] = useState<LeftTab>("map");
   const isMobile = useIsMobile();
 
   const oocLastRef = useRef(0);
@@ -113,7 +108,6 @@ export default function RoomClient({
       setAiTyping(data.room.aiTyping);
       setAiPersona(data.personas.ai ?? "");
       setUserPersonas(data.personas.users);
-      setPositions(data.positions || {});
     } catch {
       // Network blip — next tick will retry.
     } finally {
@@ -151,32 +145,6 @@ export default function RoomClient({
     });
     triggerPollSoon();
   }
-
-  const characters = useMemo(() => {
-    const humans = new Set<string>();
-    for (const m of oocMessages) if (m.sender_kind === "human") humans.add(m.sender);
-    for (const m of icMessages) if (m.sender_kind === "human") humans.add(m.sender);
-    for (const n of Object.keys(userPersonas)) humans.add(n);
-    humans.add(myName);
-    const list: { name: string; kind: "human" | "ai"; isMe: boolean }[] = Array.from(humans)
-      .sort()
-      .map((n) => ({ name: n, kind: "human" as const, isMe: n === myName }));
-    list.push({ name: aiName, kind: "ai", isMe: false });
-    return list;
-  }, [oocMessages, icMessages, userPersonas, myName, aiName]);
-
-  const handleMove = useCallback(
-    async (character: string, room: string) => {
-      setPositions((prev) => ({ ...prev, [character]: room }));
-      await fetch("/api/positions", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ character, room }),
-      });
-      triggerPollSoon();
-    },
-    [triggerPollSoon],
-  );
 
   const otherUserName = useMemo(() => {
     const others = Object.keys(userPersonas).filter((n) => n !== myName);
@@ -220,33 +188,9 @@ export default function RoomClient({
       onSent={triggerPollSoon}
     />
   );
-  const mapBlock = (
+  const inmatesBlock = (
     <div style={mapWrapperStyle}>
-      <div style={leftTabBarStyle}>
-        <button
-          style={leftTab === "map" ? leftTabActiveStyle : leftTabIdleStyle}
-          onClick={() => setLeftTab("map")}
-        >
-          Map
-        </button>
-        <button
-          style={leftTab === "inmates" ? leftTabActiveStyle : leftTabIdleStyle}
-          onClick={() => setLeftTab("inmates")}
-        >
-          Inmates
-        </button>
-      </div>
-      {leftTab === "map" ? (
-        <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-          <PrisonMap
-            characters={characters}
-            positions={positions}
-            onMove={handleMove}
-          />
-        </div>
-      ) : (
-        <InmateList />
-      )}
+      <InmateList />
     </div>
   );
 
@@ -291,9 +235,6 @@ export default function RoomClient({
             >
               Chat
             </TabButton>
-            <TabButton active={activeTab === "map"} onClick={() => setActiveTab("map")}>
-              Map
-            </TabButton>
             <TabButton active={activeTab === "inmates"} onClick={() => setActiveTab("inmates")}>
               Inmates
             </TabButton>
@@ -301,18 +242,13 @@ export default function RoomClient({
           <div style={mobileBodyStyle}>
             <div style={tabPanelStyle(activeTab === "roleplay")}>{icPane}</div>
             <div style={tabPanelStyle(activeTab === "chat")}>{oocPane}</div>
-            <div style={tabPanelStyle(activeTab === "map")}>{mapBlock}</div>
-            <div style={tabPanelStyle(activeTab === "inmates")}>
-              <div style={mapWrapperStyle}>
-                <InmateList />
-              </div>
-            </div>
+            <div style={tabPanelStyle(activeTab === "inmates")}>{inmatesBlock}</div>
           </div>
         </>
       ) : (
         <div style={panesStyle}>
           <div style={leftColumnStyle}>
-            {mapBlock}
+            {inmatesBlock}
             {oocPane}
           </div>
           {icPane}
@@ -932,36 +868,6 @@ const closeButtonStyle: React.CSSProperties = {
   fontSize: 22,
   lineHeight: 1,
   padding: "0 8px",
-};
-
-const leftTabBarStyle: React.CSSProperties = {
-  display: "flex",
-  borderBottom: "1px solid #23262d",
-  background: "#13151a",
-  flex: "0 0 auto",
-};
-
-const leftTabBaseStyle: React.CSSProperties = {
-  flex: 1,
-  padding: "8px 0",
-  fontSize: 12,
-  fontWeight: 600,
-  letterSpacing: 0.4,
-  border: "none",
-  cursor: "pointer",
-  background: "transparent",
-};
-
-const leftTabActiveStyle: React.CSSProperties = {
-  ...leftTabBaseStyle,
-  color: "#e8e8ea",
-  borderBottom: "2px solid #3457d5",
-};
-
-const leftTabIdleStyle: React.CSSProperties = {
-  ...leftTabBaseStyle,
-  color: "#6f7480",
-  borderBottom: "2px solid transparent",
 };
 
 const inmateCardStyle: React.CSSProperties = {
