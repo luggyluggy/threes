@@ -1,4 +1,5 @@
 import {
+  getAllUserPersonas,
   getMessages,
   getRoom,
   insertMessage,
@@ -33,9 +34,26 @@ export async function runAILoop(): Promise<void> {
       if (last.sender_kind === "ai") break;
 
       const aiName = fresh.ai_name!;
+      const personas = await getAllUserPersonas();
+      const seenNames = new Set<string>();
+      for (const m of history) if (m.sender_kind === "human") seenNames.add(m.sender);
+      for (const p of personas) seenNames.add(p.name);
+      const personaMap = new Map(personas.map((p) => [p.name, p.persona]));
+
+      const personaLines = Array.from(seenNames)
+        .sort()
+        .map((n) => {
+          const p = personaMap.get(n);
+          return p ? `- ${n}: ${p}` : `- ${n}: (no persona set)`;
+        })
+        .join("\n");
+
       const system = `You are ${aiName}. ${fresh.persona}
 
-You are participating in an in-character chat with two human users. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
+The human users in this chat and the characters they are playing:
+${personaLines || "- (no humans have spoken yet)"}
+
+You are participating in an in-character chat. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
 
       const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
         { role: "system", content: system },
@@ -62,7 +80,6 @@ You are participating in an in-character chat with two human users. Respond as $
       }
 
       await insertMessage("ic", aiName, "ai", response);
-      // Loop: if more human messages have arrived, generate another reply.
     }
   } finally {
     await setTyping(false);

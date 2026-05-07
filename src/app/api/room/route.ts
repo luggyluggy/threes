@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRoom, setMuted, setupRoom } from "@/lib/db";
+import { getRoom, setMuted, setRoomPersona, setupRoom } from "@/lib/db";
 
 export async function GET(): Promise<NextResponse> {
   const room = await getRoom();
@@ -25,10 +25,27 @@ export async function POST(req: Request): Promise<NextResponse> {
 }
 
 export async function PATCH(req: Request): Promise<NextResponse> {
-  const body = (await req.json().catch(() => ({}))) as { aiMuted?: unknown };
-  if (typeof body.aiMuted !== "boolean") {
-    return NextResponse.json({ error: "aiMuted boolean required" }, { status: 400 });
+  const body = (await req.json().catch(() => ({}))) as {
+    aiMuted?: unknown;
+    persona?: unknown;
+  };
+
+  let touched = false;
+
+  if (typeof body.aiMuted === "boolean") {
+    await setMuted(body.aiMuted);
+    touched = true;
   }
-  await setMuted(body.aiMuted);
+
+  if (typeof body.persona === "string") {
+    const persona = body.persona.trim();
+    if (!persona) return NextResponse.json({ error: "persona cannot be empty" }, { status: 400 });
+    if (persona.length > 4000)
+      return NextResponse.json({ error: "persona too long" }, { status: 400 });
+    await setRoomPersona(persona);
+    touched = true;
+  }
+
+  if (!touched) return NextResponse.json({ error: "no changes" }, { status: 400 });
   return NextResponse.json({ ok: true });
 }

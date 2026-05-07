@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Channel = "ooc" | "ic";
 
@@ -17,6 +17,7 @@ interface PollResponse {
   ooc: Message[];
   ic: Message[];
   room: { initialized: boolean; aiName: string | null; aiMuted: boolean; aiTyping: boolean };
+  personas: { ai: string | null; users: Record<string, string> };
 }
 
 const POLL_INTERVAL_MS = 1500;
@@ -34,6 +35,9 @@ export default function RoomClient({
   const [icMessages, setIcMessages] = useState<Message[]>([]);
   const [aiMuted, setAiMuted] = useState(initialMuted);
   const [aiTyping, setAiTyping] = useState(false);
+  const [aiPersona, setAiPersona] = useState<string>("");
+  const [userPersonas, setUserPersonas] = useState<Record<string, string>>({});
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const oocLastRef = useRef(0);
   const icLastRef = useRef(0);
@@ -65,6 +69,8 @@ export default function RoomClient({
       merge("ic", data.ic);
       setAiMuted(data.room.aiMuted);
       setAiTyping(data.room.aiTyping);
+      setAiPersona(data.personas.ai ?? "");
+      setUserPersonas(data.personas.users);
     } catch {
       // Network blip — next tick will retry.
     } finally {
@@ -72,7 +78,6 @@ export default function RoomClient({
     }
   }, [merge]);
 
-  // Polling loop.
   useEffect(() => {
     let stopped = false;
     const tick = async () => {
@@ -104,6 +109,21 @@ export default function RoomClient({
     triggerPollSoon();
   }
 
+  const otherUserName = useMemo(() => {
+    const others = Object.keys(userPersonas).filter((n) => n !== myName);
+    // Prefer someone who has actually spoken so we don't show stale ghost names.
+    const speakersInOoc = new Set(
+      oocMessages.filter((m) => m.sender_kind === "human").map((m) => m.sender),
+    );
+    const speakersInIc = new Set(
+      icMessages.filter((m) => m.sender_kind === "human").map((m) => m.sender),
+    );
+    const allSpeakers = new Set<string>([...speakersInOoc, ...speakersInIc]);
+    allSpeakers.delete(myName);
+    if (allSpeakers.size > 0) return Array.from(allSpeakers).sort()[0];
+    return others.sort()[0] ?? null;
+  }, [userPersonas, oocMessages, icMessages, myName]);
+
   return (
     <div style={shellStyle}>
       <header style={headerStyle}>
@@ -113,10 +133,15 @@ export default function RoomClient({
             you: {myName} · ai: {aiName}
           </span>
         </div>
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
-          <input type="checkbox" checked={aiMuted} onChange={toggleMute} />
-          Mute {aiName}
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <button onClick={() => setDrawerOpen(true)} style={ghostButtonStyle}>
+            Personas
+          </button>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
+            <input type="checkbox" checked={aiMuted} onChange={toggleMute} />
+            Mute {aiName}
+          </label>
+        </div>
       </header>
       <div style={panesStyle}>
         <Pane
@@ -143,7 +168,206 @@ export default function RoomClient({
           onSent={triggerPollSoon}
         />
       </div>
+      {drawerOpen && (
+        <PersonasDrawer
+          myName={myName}
+          aiName={aiName}
+          otherName={otherUserName}
+          ownPersona={userPersonas[myName] ?? ""}
+          otherPersona={otherUserName ? userPersonas[otherUserName] ?? "" : ""}
+          aiPersona={aiPersona}
+          onClose={() => setDrawerOpen(false)}
+          onSaved={triggerPollSoon}
+        />
+      )}
     </div>
+  );
+}
+
+function PersonasDrawer({
+  myName,
+  aiName,
+  otherName,
+  ownPersona,
+  otherPersona,
+  aiPersona,
+  onClose,
+  onSaved,
+}: {
+  myName: string;
+  aiName: string;
+  otherName: string | null;
+  ownPersona: string;
+  otherPersona: string;
+  aiPersona: string;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  return (
+    <>
+      <div style={overlayStyle} onClick={onClose} />
+      <aside style={drawerStyle}>
+        <div style={drawerHeaderStyle}>
+          <div style={{ fontWeight: 600 }}>Personas</div>
+          <button onClick={onClose} style={closeButtonStyle} aria-label="Close">
+            ×
+          </button>
+        </div>
+        <div style={drawerBodyStyle}>
+          <PersonaEditor
+            label={`Your character (${myName})`}
+            hint="Visible to the other human and to the AI. Only you can edit this."
+            initial={ownPersona}
+            endpoint="/api/me"
+            onSaved={onSaved}
+          />
+          <PersonaEditor
+            label={`AI (${aiName})`}
+            hint="Either human can change this at any time. Affects the AI's behavior on the next reply."
+            initial={aiPersona}
+            endpoint="/api/room"
+            payloadKey="persona"
+            onSaved={onSaved}
+            required
+          />
+          <ReadOnlyPersona
+            label={otherName ? `Other character (${otherName})` : "Other character"}
+            content={otherPersona}
+            empty={
+              otherName
+                ? `${otherName} hasn't set a persona yet.`
+                : "No other user has joined yet."
+            }
+          />
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function PersonaEditor({
+  label,
+  hint,
+  initial,
+  endpoint,
+  payloadKey = "persona",
+  required = false,
+  onSaved,
+}: {
+  label: string;
+  hint: string;
+  initial: string;
+  endpoint: string;
+  payloadKey?: string;
+  required?: boolean;
+  onSaved: () => void;
+}) {
+  const [value, setValue] = useState(initial);
+  const [savedValue, setSavedValue] = useState(initial);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // If the upstream value changes (someone else saved it, poll picked it up)
+  // and we have no unsaved edits, sync.
+  useEffect(() => {
+    if (value === savedValue) {
+      setValue(initial);
+      setSavedValue(initial);
+    } else {
+      // Track the upstream value silently so we know what to compare against.
+      setSavedValue(initial);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initial]);
+
+  const dirty = value !== savedValue;
+
+  async function save() {
+    if (saving) return;
+    if (required && !value.trim()) {
+      setErr("cannot be empty");
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    const res = await fetch(endpoint, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [payloadKey]: value }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setErr(data.error || "failed");
+    } else {
+      setSavedValue(value);
+      onSaved();
+    }
+    setSaving(false);
+  }
+
+  return (
+    <section style={editorSectionStyle}>
+      <div style={{ fontWeight: 600 }}>{label}</div>
+      <div style={{ color: "#9aa0a6", fontSize: 12 }}>{hint}</div>
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        rows={6}
+        style={editorTextareaStyle}
+        placeholder="Describe the character — appearance, voice, motivations, anything you want known."
+      />
+      {err && <div style={{ color: "#ff8a8a", fontSize: 13 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <button
+          onClick={save}
+          disabled={saving || !dirty}
+          style={dirty ? primaryButtonStyle : ghostButtonStyle}
+        >
+          {saving ? "Saving…" : dirty ? "Save" : "Saved"}
+        </button>
+        {dirty && (
+          <button
+            onClick={() => {
+              setValue(savedValue);
+              setErr(null);
+            }}
+            disabled={saving}
+            style={ghostButtonStyle}
+          >
+            Discard
+          </button>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function ReadOnlyPersona({
+  label,
+  content,
+  empty,
+}: {
+  label: string;
+  content: string;
+  empty: string;
+}) {
+  return (
+    <section style={editorSectionStyle}>
+      <div style={{ fontWeight: 600 }}>{label}</div>
+      <div style={{ color: "#9aa0a6", fontSize: 12 }}>Read-only. Only that user can edit it.</div>
+      <div
+        style={{
+          ...editorTextareaStyle,
+          background: "#0a0b0e",
+          color: content ? "#e8e8ea" : "#6f7480",
+          fontStyle: content ? "normal" : "italic",
+          minHeight: 96,
+          whiteSpace: "pre-wrap",
+        }}
+      >
+        {content || empty}
+      </div>
+    </section>
   );
 }
 
@@ -323,4 +547,84 @@ const sendButtonStyle: React.CSSProperties = {
   color: "white",
   border: "none",
   borderRadius: 8,
+};
+
+const overlayStyle: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.4)",
+  zIndex: 10,
+};
+
+const drawerStyle: React.CSSProperties = {
+  position: "fixed",
+  top: 0,
+  right: 0,
+  height: "100vh",
+  width: "min(440px, 100vw)",
+  background: "#13151a",
+  borderLeft: "1px solid #23262d",
+  zIndex: 11,
+  display: "flex",
+  flexDirection: "column",
+};
+
+const drawerHeaderStyle: React.CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  padding: "14px 18px",
+  borderBottom: "1px solid #23262d",
+};
+
+const drawerBodyStyle: React.CSSProperties = {
+  flex: 1,
+  overflowY: "auto",
+  padding: 18,
+  display: "flex",
+  flexDirection: "column",
+  gap: 24,
+};
+
+const editorSectionStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+};
+
+const editorTextareaStyle: React.CSSProperties = {
+  padding: "10px 12px",
+  background: "#0e0f12",
+  border: "1px solid #2a2d35",
+  borderRadius: 8,
+  outline: "none",
+  resize: "vertical",
+  fontFamily: "inherit",
+  color: "inherit",
+  minHeight: 120,
+};
+
+const primaryButtonStyle: React.CSSProperties = {
+  padding: "8px 14px",
+  background: "#3457d5",
+  color: "white",
+  border: "none",
+  borderRadius: 8,
+};
+
+const ghostButtonStyle: React.CSSProperties = {
+  padding: "8px 14px",
+  background: "transparent",
+  color: "#c9ccd3",
+  border: "1px solid #2a2d35",
+  borderRadius: 8,
+};
+
+const closeButtonStyle: React.CSSProperties = {
+  background: "transparent",
+  color: "#c9ccd3",
+  border: "none",
+  fontSize: 22,
+  lineHeight: 1,
+  padding: "0 8px",
 };

@@ -50,6 +50,13 @@ async function ensureSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_messages_room_channel
         ON messages (room_id, channel, id)
     `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS user_personas (
+        name TEXT PRIMARY KEY,
+        persona TEXT NOT NULL,
+        updated_at BIGINT NOT NULL
+      )
+    `;
   })().catch((err) => {
     _schemaReady = null;
     throw err;
@@ -183,6 +190,49 @@ export async function insertMessage(
     RETURNING *
   `;
   return normalizeMessage(rows[0]);
+}
+
+export async function setRoomPersona(persona: string): Promise<void> {
+  await sql`UPDATE room SET persona = ${persona} WHERE id = ${ROOM_ID}`;
+}
+
+export interface UserPersona {
+  name: string;
+  persona: string;
+  updated_at: number;
+}
+
+interface UserPersonaRow {
+  name: string;
+  persona: string;
+  updated_at: string | number;
+}
+
+function normalizeUserPersona(r: UserPersonaRow): UserPersona {
+  return { name: r.name, persona: r.persona, updated_at: Number(r.updated_at) };
+}
+
+export async function getUserPersona(name: string): Promise<UserPersona | null> {
+  const rows = await sql<UserPersonaRow>`
+    SELECT * FROM user_personas WHERE name = ${name}
+  `;
+  return rows[0] ? normalizeUserPersona(rows[0]) : null;
+}
+
+export async function setUserPersona(name: string, persona: string): Promise<void> {
+  const now = Date.now();
+  await sql`
+    INSERT INTO user_personas (name, persona, updated_at)
+    VALUES (${name}, ${persona}, ${now})
+    ON CONFLICT (name) DO UPDATE
+      SET persona = EXCLUDED.persona,
+          updated_at = EXCLUDED.updated_at
+  `;
+}
+
+export async function getAllUserPersonas(): Promise<UserPersona[]> {
+  const rows = await sql<UserPersonaRow>`SELECT * FROM user_personas ORDER BY name`;
+  return rows.map(normalizeUserPersona);
 }
 
 export async function getMessages(
