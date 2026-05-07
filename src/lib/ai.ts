@@ -1,78 +1,70 @@
-import { getMessages, getRoom, insertMessage } from "./db";
-import { publish } from "./events";
+import {
+  getMessages,
+  getRoom,
+  insertMessage,
+  setTyping,
+  tryAcquireTyping,
+} from "./db";
 import { xaiChat } from "./xai";
 
-let inFlight = false;
-let pendingRefire = false;
+/**
+ * Run the AI loop. Acquires a DB-level lock so concurrent invocations don't
+ * generate parallel responses. Loops while new human messages arrive during
+ * generation, so a fast back-and-forth from the humans still gets handled.
+ *
+ * Designed to be called from `after()` so it can run past the response.
+ */
+export async function runAILoop(): Promise<void> {
+  const room = await getRoom();
+  if (!room || !room.ai_name || !room.persona || room.ai_muted) return;
 
-export function maybeTriggerAI(): void {
-  const room = getRoom();
-  if (!room || !room.ai_name || !room.persona) return;
-  if (room.ai_muted) return;
+  const acquired = await tryAcquireTyping();
+  if (!acquired) return; // Another invocation is already generating.
 
-  if (inFlight) {
-    pendingRefire = true;
-    return;
-  }
-  inFlight = true;
-  void runAI()
-    .catch((err) => {
-      console.error("AI error:", err);
-      const room = getRoom();
-      const aiName = room?.ai_name || "AI";
-      const msg = insertMessage(
-        "ic",
-        aiName,
-        "ai",
-        `[error generating response: ${err instanceof Error ? err.message : String(err)}]`,
-      );
-      publish("message", msg);
-    })
-    .finally(() => {
-      inFlight = false;
-      if (pendingRefire) {
-        pendingRefire = false;
-        const room = getRoom();
-        if (room && !room.ai_muted) maybeTriggerAI();
-      }
-    });
-}
+  try {
+    let safety = 0;
+    while (safety++ < 5) {
+      const fresh = await getRoom();
+      if (!fresh || fresh.ai_muted) break;
 
-async function runAI(): Promise<void> {
-  const room = getRoom();
-  if (!room || !room.ai_name || !room.persona) return;
-  const aiName = room.ai_name;
+      const history = await getMessages("ic", 0, 200);
+      if (history.length === 0) break;
+      const last = history[history.length - 1];
+      if (last.sender_kind === "ai") break;
 
-  const history = getMessages("ic", 0, 200);
-  if (history.length === 0) return;
-  const last = history[history.length - 1];
-  if (last.sender_kind === "ai") return;
-
-  publish("room", { typing: true });
-
-  const system = `You are ${aiName}. ${room.persona}
+      const aiName = fresh.ai_name!;
+      const system = `You are ${aiName}. ${fresh.persona}
 
 You are participating in an in-character chat with two human users. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
 
-  const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
-    { role: "system", content: system },
-  ];
+      const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
+        { role: "system", content: system },
+      ];
+      for (const m of history) {
+        if (m.sender_kind === "ai") {
+          chat.push({ role: "assistant", content: m.content });
+        } else {
+          chat.push({ role: "user", content: `${m.sender}: ${m.content}` });
+        }
+      }
 
-  for (const m of history) {
-    if (m.sender_kind === "ai") {
-      chat.push({ role: "assistant", content: m.content });
-    } else {
-      chat.push({ role: "user", content: `${m.sender}: ${m.content}` });
+      let response: string;
+      try {
+        response = await xaiChat(chat);
+      } catch (err) {
+        await insertMessage(
+          "ic",
+          aiName,
+          "ai",
+          `[error generating response: ${err instanceof Error ? err.message : String(err)}]`,
+        );
+        break;
+      }
+
+      await insertMessage("ic", aiName, "ai", response);
+      // Loop: if more human messages have arrived, generate another reply.
     }
-  }
-
-  let response: string;
-  try {
-    response = await xaiChat(chat);
   } finally {
-    publish("room", { typing: false });
+    await setTyping(false);
   }
-
-  const msg = insertMessage("ic", aiName, "ai", response);
-  publish("message", msg);
 }

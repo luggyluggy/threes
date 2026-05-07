@@ -18,7 +18,7 @@ export default async function Home() {
     );
   }
 
-  const room = getRoom();
+  const room = await getRoom();
   if (!room) {
     return (
       <main style={pageStyle}>

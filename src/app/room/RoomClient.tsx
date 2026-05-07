@@ -13,6 +13,14 @@ interface Message {
   created_at: number;
 }
 
+interface PollResponse {
+  ooc: Message[];
+  ic: Message[];
+  room: { initialized: boolean; aiName: string | null; aiMuted: boolean; aiTyping: boolean };
+}
+
+const POLL_INTERVAL_MS = 1500;
+
 export default function RoomClient({
   myName,
   aiName,
@@ -27,48 +35,63 @@ export default function RoomClient({
   const [aiMuted, setAiMuted] = useState(initialMuted);
   const [aiTyping, setAiTyping] = useState(false);
 
-  const append = useCallback((m: Message) => {
-    const setter = m.channel === "ooc" ? setOocMessages : setIcMessages;
-    setter((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
+  const oocLastRef = useRef(0);
+  const icLastRef = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pollInFlightRef = useRef(false);
+
+  const merge = useCallback((channel: Channel, incoming: Message[]) => {
+    if (incoming.length === 0) return;
+    if (channel === "ooc") {
+      oocLastRef.current = Math.max(oocLastRef.current, incoming[incoming.length - 1].id);
+      setOocMessages((prev) => mergeUnique(prev, incoming));
+    } else {
+      icLastRef.current = Math.max(icLastRef.current, incoming[incoming.length - 1].id);
+      setIcMessages((prev) => mergeUnique(prev, incoming));
+    }
   }, []);
 
-  // Initial history load.
+  const poll = useCallback(async () => {
+    if (pollInFlightRef.current) return;
+    pollInFlightRef.current = true;
+    try {
+      const res = await fetch(
+        `/api/poll?oocSince=${oocLastRef.current}&icSince=${icLastRef.current}`,
+        { cache: "no-store" },
+      );
+      if (!res.ok) return;
+      const data = (await res.json()) as PollResponse;
+      merge("ooc", data.ooc);
+      merge("ic", data.ic);
+      setAiMuted(data.room.aiMuted);
+      setAiTyping(data.room.aiTyping);
+    } catch {
+      // Network blip — next tick will retry.
+    } finally {
+      pollInFlightRef.current = false;
+    }
+  }, [merge]);
+
+  // Polling loop.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const [oocRes, icRes] = await Promise.all([
-        fetch("/api/messages?channel=ooc").then((r) => r.json()),
-        fetch("/api/messages?channel=ic").then((r) => r.json()),
-      ]);
-      if (cancelled) return;
-      setOocMessages(oocRes.messages || []);
-      setIcMessages(icRes.messages || []);
-    })();
+    let stopped = false;
+    const tick = async () => {
+      if (stopped) return;
+      await poll();
+      if (stopped) return;
+      pollTimerRef.current = setTimeout(tick, POLL_INTERVAL_MS);
+    };
+    tick();
     return () => {
-      cancelled = true;
+      stopped = true;
+      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
     };
-  }, []);
+  }, [poll]);
 
-  // SSE subscription.
-  useEffect(() => {
-    const es = new EventSource("/api/stream");
-    es.addEventListener("message", (e) => {
-      const m = JSON.parse((e as MessageEvent).data) as Message;
-      append(m);
-    });
-    es.addEventListener("room", (e) => {
-      const data = JSON.parse((e as MessageEvent).data) as {
-        aiMuted?: boolean;
-        typing?: boolean;
-      };
-      if (typeof data.aiMuted === "boolean") setAiMuted(data.aiMuted);
-      if (typeof data.typing === "boolean") setAiTyping(data.typing);
-    });
-    es.onerror = () => {
-      // Browser will auto-reconnect; nothing to do.
-    };
-    return () => es.close();
-  }, [append]);
+  const triggerPollSoon = useCallback(() => {
+    if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
+    pollTimerRef.current = setTimeout(() => void poll(), 200);
+  }, [poll]);
 
   async function toggleMute() {
     const next = !aiMuted;
@@ -78,6 +101,7 @@ export default function RoomClient({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ aiMuted: next }),
     });
+    triggerPollSoon();
   }
 
   return (
@@ -102,6 +126,7 @@ export default function RoomClient({
           messages={oocMessages}
           myName={myName}
           aiName={aiName}
+          onSent={triggerPollSoon}
         />
         <Pane
           title="In character"
@@ -115,10 +140,19 @@ export default function RoomClient({
           myName={myName}
           aiName={aiName}
           typing={aiTyping && !aiMuted}
+          onSent={triggerPollSoon}
         />
       </div>
     </div>
   );
+}
+
+function mergeUnique(prev: Message[], incoming: Message[]): Message[] {
+  if (incoming.length === 0) return prev;
+  const seen = new Set(prev.map((m) => m.id));
+  const additions = incoming.filter((m) => !seen.has(m.id));
+  if (additions.length === 0) return prev;
+  return [...prev, ...additions].sort((a, b) => a.id - b.id);
 }
 
 function Pane({
@@ -129,6 +163,7 @@ function Pane({
   myName,
   aiName,
   typing,
+  onSent,
 }: {
   title: string;
   subtitle: string;
@@ -137,6 +172,7 @@ function Pane({
   myName: string;
   aiName: string;
   typing?: boolean;
+  onSent: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -159,8 +195,9 @@ function Pane({
       body: JSON.stringify({ channel, content }),
     });
     if (!res.ok) {
-      // Restore draft so the user can retry.
       setDraft(content);
+    } else {
+      onSent();
     }
     setSending(false);
   }
