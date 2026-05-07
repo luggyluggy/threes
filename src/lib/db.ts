@@ -64,6 +64,15 @@ async function ensureSchema(): Promise<void> {
         updated_at BIGINT NOT NULL
       )
     `;
+    await sql`
+      CREATE TABLE IF NOT EXISTS scheduled_tasks (
+        id BIGSERIAL PRIMARY KEY,
+        trigger_note TEXT NOT NULL,
+        scheduled_for BIGINT NOT NULL,
+        executed_at BIGINT,
+        created_at BIGINT NOT NULL
+      )
+    `;
   })().catch((err) => {
     _schemaReady = null;
     throw err;
@@ -288,4 +297,54 @@ export async function getMessages(
     LIMIT ${limit}
   `;
   return rows.map(normalizeMessage);
+}
+
+export interface ScheduledTask {
+  id: number;
+  trigger_note: string;
+  scheduled_for: number;
+  executed_at: number | null;
+  created_at: number;
+}
+
+interface ScheduledTaskRow {
+  id: string | number;
+  trigger_note: string;
+  scheduled_for: string | number;
+  executed_at: string | number | null;
+  created_at: string | number;
+}
+
+function normalizeScheduledTask(r: ScheduledTaskRow): ScheduledTask {
+  return {
+    id: Number(r.id),
+    trigger_note: r.trigger_note,
+    scheduled_for: Number(r.scheduled_for),
+    executed_at: r.executed_at == null ? null : Number(r.executed_at),
+    created_at: Number(r.created_at),
+  };
+}
+
+export async function insertScheduledTask(
+  triggerNote: string,
+  scheduledFor: number,
+): Promise<ScheduledTask> {
+  const now = Date.now();
+  const rows = await sql<ScheduledTaskRow>`
+    INSERT INTO scheduled_tasks (trigger_note, scheduled_for, created_at)
+    VALUES (${triggerNote}, ${scheduledFor}, ${now})
+    RETURNING *
+  `;
+  return normalizeScheduledTask(rows[0]);
+}
+
+export async function claimDueTasks(): Promise<ScheduledTask[]> {
+  const now = Date.now();
+  const rows = await sql<ScheduledTaskRow>`
+    UPDATE scheduled_tasks
+    SET executed_at = ${now}
+    WHERE scheduled_for <= ${now} AND executed_at IS NULL
+    RETURNING *
+  `;
+  return rows.map(normalizeScheduledTask);
 }

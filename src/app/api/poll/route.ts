@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
-import { getAllUserPersonas, getMessages, getPositions, getRoom } from "@/lib/db";
+import { NextResponse, after } from "next/server";
+import { getAllUserPersonas, claimDueTasks, getMessages, getPositions, getRoom } from "@/lib/db";
+import { runAILoop } from "@/lib/ai";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,21 @@ export async function GET(req: Request): Promise<NextResponse> {
 
   const positionsMap: Record<string, string> = {};
   for (const p of positions) positionsMap[p.character_name] = p.room_id;
+
+  after(async () => {
+    try {
+      const tasks = await claimDueTasks();
+      for (const task of tasks) {
+        try {
+          await runAILoop({ triggerNote: task.trigger_note });
+        } catch (err) {
+          console.error("scheduled task failed:", task.id, err);
+        }
+      }
+    } catch (err) {
+      console.error("claimDueTasks failed:", err);
+    }
+  });
 
   return NextResponse.json({
     ooc,

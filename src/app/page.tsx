@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getRoom } from "@/lib/db";
+import { CHARACTER_NAMES } from "@/lib/characters";
 import { getName } from "@/lib/identity";
 import ClaimNameForm from "./_components/ClaimNameForm";
 import SetupRoomForm from "./_components/SetupRoomForm";
@@ -11,8 +12,8 @@ export default async function Home() {
       <main style={pageStyle}>
         <div style={cardStyle}>
           <h1 style={{ marginTop: 0 }}>Threes</h1>
-          <p style={{ color: "#9aa0a6" }}>Pick a name to enter the room.</p>
-          <ClaimNameForm />
+          <p style={{ color: "#9aa0a6" }}>Choose your character.</p>
+          <ClaimNameForm existing={[...CHARACTER_NAMES]} />
         </div>
       </main>
     );

@@ -4,26 +4,44 @@ import {
   getPositions,
   getRoom,
   insertMessage,
+  insertScheduledTask,
   setTyping,
   tryAcquireTyping,
 } from "./db";
 import { extractAndApplyMovements } from "./extract";
 import { roomLabel } from "./rooms";
-import { xaiChat } from "./xai";
+import { xaiChatWithTools, type ToolDefinition } from "./xai";
 
-/**
- * Run the AI loop. Acquires a DB-level lock so concurrent invocations don't
- * generate parallel responses. Loops while new human messages arrive during
- * generation, so a fast back-and-forth from the humans still gets handled.
- *
- * Designed to be called from `after()` so it can run past the response.
- */
-export async function runAILoop(): Promise<void> {
+const SCHEDULE_TOOL: ToolDefinition = {
+  name: "schedule_action",
+  description:
+    "Schedule yourself to perform an in-character action at a future time. Use for inspections, patrols, check-ins, or anything that should happen hours from now.",
+  parameters: {
+    type: "object",
+    properties: {
+      trigger_note: {
+        type: "string",
+        description:
+          "A specific note to yourself describing exactly what to do when this task fires.",
+      },
+      delay_hours: {
+        type: "number",
+        description:
+          "How many hours from now to perform this action. Can be fractional (e.g. 0.5 for 30 minutes).",
+      },
+    },
+    required: ["trigger_note", "delay_hours"],
+  },
+};
+
+export async function runAILoop(opts: { triggerNote?: string } = {}): Promise<void> {
   const room = await getRoom();
   if (!room || !room.ai_name || !room.persona || room.ai_muted) return;
 
   const acquired = await tryAcquireTyping();
   if (!acquired) return;
+
+  let { triggerNote } = opts;
 
   try {
     let safety = 0;
@@ -32,9 +50,14 @@ export async function runAILoop(): Promise<void> {
       if (!fresh || fresh.ai_muted) break;
 
       const history = await getMessages("ic", 0, 200);
-      if (history.length === 0) break;
-      const last = history[history.length - 1];
-      if (last.sender_kind === "ai") break;
+      const lastIsAI =
+        history.length > 0 && history[history.length - 1].sender_kind === "ai";
+
+      // For triggered runs, generate even if AI had the last word (or history is empty).
+      // For reactive runs, stop if AI already has the last word or there's nothing to respond to.
+      if (!triggerNote) {
+        if (history.length === 0 || lastIsAI) break;
+      }
 
       const aiName = fresh.ai_name!;
       const personas = await getAllUserPersonas();
@@ -65,6 +88,10 @@ export async function runAILoop(): Promise<void> {
         })
         .join("\n");
 
+      const triggerClause = triggerNote
+        ? `\n\n(Scheduled reminder — carry this out now, do not mention it was scheduled: ${triggerNote})`
+        : "";
+
       const system = `You are ${aiName}. ${fresh.persona}
 
 The human users in this chat and the characters they are playing:
@@ -73,7 +100,12 @@ ${personaLines || "- (no humans have spoken yet)"}
 Current locations in the prison:
 ${locationLines}
 
-You are participating in an in-character chat. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Stay consistent with the current locations: don't claim to be somewhere you aren't. If you want to move, narrate it clearly (e.g. "I walk to the dining hall") so the location updates. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.`;
+You are participating in an in-character chat. Respond as ${aiName} only — do not narrate the humans' actions or speak for them. Stay consistent with the current locations: don't claim to be somewhere you aren't. If you want to move, narrate it clearly (e.g. "I walk to the dining hall") so the location updates. Keep responses natural and conversational in length unless the scene calls for more. Do not prefix your response with your name; the system already attributes it.
+
+You may use the schedule_action tool to queue future in-character actions (daily inspections, patrols, follow-ups, etc.). When you schedule something, continue your response naturally without announcing that you set a reminder.${triggerClause}`;
+
+      // Clear triggerNote after first iteration so subsequent reactive iterations behave normally.
+      triggerNote = undefined;
 
       const chat: { role: "system" | "user" | "assistant"; content: string }[] = [
         { role: "system", content: system },
@@ -86,26 +118,47 @@ You are participating in an in-character chat. Respond as ${aiName} only — do 
         }
       }
 
-      let response: string;
+      let content: string;
+      let toolCalls: Awaited<ReturnType<typeof xaiChatWithTools>>["toolCalls"];
       try {
-        response = await xaiChat(chat);
+        ({ content, toolCalls } = await xaiChatWithTools(chat, [SCHEDULE_TOOL]));
       } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        const is503 = msg.includes("503");
         await insertMessage(
           "ic",
           aiName,
           "ai",
-          `[error generating response: ${err instanceof Error ? err.message : String(err)}]`,
+          is503
+            ? "The officer is currently away from his post (error). He will be back soon."
+            : `[error generating response: ${msg}]`,
         );
         break;
       }
 
-      await insertMessage("ic", aiName, "ai", response);
+      // Persist any scheduled tasks the AI requested.
+      for (const tc of toolCalls) {
+        if (tc.name === "schedule_action") {
+          const note =
+            typeof tc.arguments.trigger_note === "string" ? tc.arguments.trigger_note : "";
+          const hours =
+            typeof tc.arguments.delay_hours === "number" ? tc.arguments.delay_hours : 1;
+          if (note && hours > 0) {
+            const scheduledFor = Date.now() + Math.round(hours * 60 * 60 * 1000);
+            await insertScheduledTask(note, scheduledFor).catch((e) =>
+              console.error("failed to save scheduled task:", e),
+            );
+          }
+        }
+      }
 
-      // Extract location changes from the AI's reply too.
-      try {
-        await extractAndApplyMovements();
-      } catch (err) {
-        console.error("post-AI extraction failed:", err);
+      if (content) {
+        await insertMessage("ic", aiName, "ai", content);
+        try {
+          await extractAndApplyMovements();
+        } catch (err) {
+          console.error("post-AI extraction failed:", err);
+        }
       }
     }
   } finally {
