@@ -73,6 +73,9 @@ async function ensureSchema(): Promise<void> {
         created_at BIGINT NOT NULL
       )
     `;
+    // Heartbeat for the AI typing lock: lets us auto-recover if a serverless
+    // function is killed mid-response and never reaches its finally.
+    await sql`ALTER TABLE room ADD COLUMN IF NOT EXISTS typing_since BIGINT`;
   })().catch((err) => {
     _schemaReady = null;
     throw err;
@@ -175,22 +178,72 @@ export async function setMuted(muted: boolean): Promise<void> {
   await sql`UPDATE room SET ai_muted = ${muted} WHERE id = ${ROOM_ID}`;
 }
 
+// If a typing lock is older than this, treat it as stale and let the next
+// caller steal it. Vercel's maxDuration on this app's routes is 60s, so 90s
+// gives healthy responses room while still recovering quickly from crashes.
+export const TYPING_LOCK_TTL_MS = 90_000;
+
 export async function setTyping(typing: boolean): Promise<void> {
-  await sql`UPDATE room SET ai_typing = ${typing} WHERE id = ${ROOM_ID}`;
+  if (typing) {
+    const now = Date.now();
+    await sql`
+      UPDATE room SET ai_typing = TRUE, typing_since = ${now} WHERE id = ${ROOM_ID}
+    `;
+  } else {
+    await sql`
+      UPDATE room SET ai_typing = FALSE, typing_since = NULL WHERE id = ${ROOM_ID}
+    `;
+  }
 }
 
 /**
- * Atomic compare-and-set on ai_typing. Returns true if we acquired the lock
- * (typing was false, now true). Returns false if another invocation already holds it.
+ * Atomic compare-and-set on ai_typing with TTL-based stale-lock takeover.
+ * Returns true if we hold the lock after this call. Also refreshes
+ * typing_since so concurrent stale-lock readers don't both think they hold it.
  */
 export async function tryAcquireTyping(): Promise<boolean> {
+  const now = Date.now();
+  const cutoff = now - TYPING_LOCK_TTL_MS;
   const rows = await sql<{ ai_typing: boolean }>`
     UPDATE room
-    SET ai_typing = TRUE
-    WHERE id = ${ROOM_ID} AND ai_typing = FALSE
+    SET ai_typing = TRUE, typing_since = ${now}
+    WHERE id = ${ROOM_ID}
+      AND (
+        ai_typing = FALSE
+        OR typing_since IS NULL
+        OR typing_since < ${cutoff}
+      )
     RETURNING ai_typing
   `;
   return rows.length > 0;
+}
+
+/**
+ * Best-effort heartbeat — call periodically inside a long-running AI loop so
+ * other workers don't steal the lock mid-response.
+ */
+export async function refreshTyping(): Promise<void> {
+  const now = Date.now();
+  await sql`
+    UPDATE room SET typing_since = ${now}
+    WHERE id = ${ROOM_ID} AND ai_typing = TRUE
+  `;
+}
+
+/**
+ * Clear the typing lock if it's been held longer than TYPING_LOCK_TTL_MS —
+ * almost certainly a crashed/timed-out worker. Safe to call from any path
+ * that's about to read ai_typing.
+ */
+export async function clearStaleTyping(): Promise<void> {
+  const cutoff = Date.now() - TYPING_LOCK_TTL_MS;
+  await sql`
+    UPDATE room
+    SET ai_typing = FALSE, typing_since = NULL
+    WHERE id = ${ROOM_ID}
+      AND ai_typing = TRUE
+      AND (typing_since IS NULL OR typing_since < ${cutoff})
+  `;
 }
 
 export async function insertMessage(

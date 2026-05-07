@@ -5,12 +5,17 @@ import {
   getRoom,
   insertMessage,
   insertScheduledTask,
+  refreshTyping,
   setTyping,
   tryAcquireTyping,
 } from "./db";
 import { extractAndApplyMovements } from "./extract";
 import { roomLabel } from "./rooms";
 import { xaiChatWithTools, type ToolDefinition } from "./xai";
+
+// Hard cap per xAI call, slightly under Vercel's 60s maxDuration so the
+// finally always runs and releases the typing lock.
+const XAI_CALL_TIMEOUT_MS = 50_000;
 
 const SCHEDULE_TOOL: ToolDefinition = {
   name: "schedule_action",
@@ -118,22 +123,40 @@ You may use the schedule_action tool to queue future in-character actions (daily
         }
       }
 
+      // Refresh the heartbeat each iteration so a slow but live response
+      // doesn't get its lock stolen by clearStaleTyping.
+      await refreshTyping().catch((e) => console.error("refreshTyping failed:", e));
+
       let content: string;
       let toolCalls: Awaited<ReturnType<typeof xaiChatWithTools>>["toolCalls"];
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), XAI_CALL_TIMEOUT_MS);
       try {
-        ({ content, toolCalls } = await xaiChatWithTools(chat, [SCHEDULE_TOOL]));
+        ({ content, toolCalls } = await xaiChatWithTools(
+          chat,
+          [SCHEDULE_TOOL],
+          ac.signal,
+        ));
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const isAbort =
+          (err instanceof Error && err.name === "AbortError") || ac.signal.aborted;
+        const msg = isAbort
+          ? `xAI call timed out after ${XAI_CALL_TIMEOUT_MS}ms`
+          : err instanceof Error
+            ? err.message
+            : String(err);
         const is503 = msg.includes("503");
         await insertMessage(
           "ic",
           aiName,
           "ai",
-          is503
+          is503 || isAbort
             ? "The officer is currently away from his post (error). He will be back soon."
             : `[error generating response: ${msg}]`,
         );
         break;
+      } finally {
+        clearTimeout(timer);
       }
 
       // Persist any scheduled tasks the AI requested.

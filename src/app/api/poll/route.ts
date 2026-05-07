@@ -1,5 +1,12 @@
 import { NextResponse, after } from "next/server";
-import { getAllUserPersonas, claimDueTasks, getMessages, getPositions, getRoom } from "@/lib/db";
+import {
+  getAllUserPersonas,
+  claimDueTasks,
+  clearStaleTyping,
+  getMessages,
+  getPositions,
+  getRoom,
+} from "@/lib/db";
 import { runAILoop } from "@/lib/ai";
 
 export const dynamic = "force-dynamic";
@@ -8,6 +15,10 @@ export async function GET(req: Request): Promise<NextResponse> {
   const url = new URL(req.url);
   const oocSince = Number(url.searchParams.get("oocSince") || 0) || 0;
   const icSince = Number(url.searchParams.get("icSince") || 0) || 0;
+
+  // Self-healing: if a previous AI worker crashed before releasing the typing
+  // lock, the cell stays "typing" forever. Drop stale locks before reporting.
+  await clearStaleTyping();
 
   const [room, ooc, ic, userPersonas, positions] = await Promise.all([
     getRoom(),
